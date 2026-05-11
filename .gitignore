@@ -1,0 +1,31 @@
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Training data and model artifacts — large, often copyright-restricted
+data/
+checkpoints/
+*.ckpt
+*.onnx
+*.wav
+*.mp3
+*.opus
+*.webm
+*.m4a
+
+# Pipeline working artifacts
+*.log
+transcripts/
+metadata.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
