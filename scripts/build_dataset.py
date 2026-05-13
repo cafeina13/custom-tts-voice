@@ -6,12 +6,21 @@ import soundfile as sf
 import librosa
 
 # Layout (override with env vars):
-#   TTS_DATA_ROOT  -> root dir containing per-dataset subdirs   (default: ~/TTS/data)
-#   TTS_DATASET    -> dataset subdir to process                 (default: merve)
-#   TTS_LANGUAGE   -> Whisper language code                     (default: tr)
+#   TTS_DATA_ROOT          -> root dir containing per-dataset subdirs   (default: ~/TTS/data)
+#   TTS_DATASET            -> dataset subdir to process                 (default: merve)
+#   TTS_LANGUAGE           -> Whisper language code                     (default: tr)
+#   TTS_SEGMENT_PADDING_S  -> seconds of audio kept BEFORE/AFTER each
+#                             Whisper-VAD segment when slicing chunks.
+#                             0.0 = original tight cut (Whisper's exact
+#                             timestamps); 0.2 = 200 ms padding each side
+#                             so the model learns proper attack/release.
+#                             Default: 0.2 (introduced in experiment 2
+#                             after experiment 1's tight cuts caused
+#                             swallowed word starts and boundary noise).
 DATA_ROOT = Path(os.environ.get('TTS_DATA_ROOT', str(Path.home() / 'TTS' / 'data')))
 DATASET = os.environ.get('TTS_DATASET', 'merve')
 LANGUAGE = os.environ.get('TTS_LANGUAGE', 'tr')
+SEGMENT_PADDING_S = float(os.environ.get('TTS_SEGMENT_PADDING_S', '0.2'))
 
 BASE = DATA_ROOT / DATASET
 RAW = BASE / 'raw'
@@ -70,8 +79,26 @@ for wav_path in sorted(RAW.glob('*.wav')):
             dropped_speech += 1; continue
         if len(text) < MIN_TEXT_LEN:
             dropped_text += 1; continue
-        s_idx = int(seg['start'] * TARGET_SR)
-        e_idx = int(seg['end'] * TARGET_SR)
+        # Pad each chunk by up to SEGMENT_PADDING_S on each side.
+        #
+        # IMPORTANT: clamp the padding to the midpoint of the gap to the
+        # adjacent Whisper segment, so two padded chunks never cover the
+        # same audio. Without the clamp, a chunk's padded "tail" could
+        # include the first syllable of the next utterance — but the
+        # next chunk's transcript would already claim that syllable, so
+        # the current chunk would learn a phantom phoneme it can't see
+        # in its own transcript. That bleed-over is one cause of the
+        # boundary-glitch artifacts experiment 1 had.
+        prev_end = data['segments'][i - 1]['end'] if i > 0 else 0.0
+        next_start = (
+            data['segments'][i + 1]['start']
+            if i + 1 < len(data['segments'])
+            else float('inf')
+        )
+        pad_before = max(0.0, min(SEGMENT_PADDING_S, (seg['start'] - prev_end) / 2))
+        pad_after = max(0.0, min(SEGMENT_PADDING_S, (next_start - seg['end']) / 2))
+        s_idx = max(0, int((seg['start'] - pad_before) * TARGET_SR))
+        e_idx = min(len(audio), int((seg['end'] + pad_after) * TARGET_SR))
         chunk = audio[s_idx:e_idx]
         out_name = f'{vid}_{i:04d}.wav'
         sf.write(WAVS / out_name, chunk, TARGET_SR, subtype='PCM_16')
