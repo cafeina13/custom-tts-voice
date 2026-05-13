@@ -1,0 +1,8 @@
+# Shell + Python scripts must keep LF line endings even on Windows,
+# otherwise bash chokes on \r and Python tooling can misread shebangs.
+*.sh   text eol=lf
+*.py   text eol=lf
+
+# Everything else: normalize to LF in the repo, let working-tree
+# checkouts use the OS default.
+*      text=auto
