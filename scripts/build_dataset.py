@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from faster_whisper import WhisperModel
 import soundfile as sf
@@ -35,10 +36,55 @@ MIN_DUR, MAX_DUR = 1.5, 15.0
 MIN_TEXT_LEN = 5
 MAX_NO_SPEECH_PROB = 0.5
 
+# Foreign-word filter (experiment 2). Drop any segment whose transcript
+# contains a token in the drop set, because espeak-tr will phonemize that
+# token with Turkish letter-to-sound rules and produce a phoneme sequence
+# that doesn't match what the speaker actually said in the audio (e.g.
+# "Frankenstein" pronounced English-style). The drop set is built by
+# scripts/scan_foreign_words.py + a human review pass; see
+# auto_drop_tokens.txt and review_tokens.txt in the dataset directory.
+TOKEN_RE = re.compile(r"[^\W\d_]+(?:[''][^\W\d_]+)*", re.UNICODE)
+NUMBER_SUFFIX_RE = re.compile(r"\d+[''][^\W\d_]+", re.UNICODE)
+APOSTROPHE_RE = re.compile(r"['']")
+DROP_TOKEN_FILES = ('auto_drop_tokens.txt', 'review_tokens.txt')
+
+
+def load_drop_set(base: Path) -> set[str]:
+    drop: set[str] = set()
+    for name in DROP_TOKEN_FILES:
+        fp = base / name
+        if not fp.exists():
+            continue
+        for line in fp.read_text(encoding='utf-8').splitlines():
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                drop.add(parts[2].strip().casefold())
+    return drop
+
+
+def has_foreign_token(text: str, drop: set[str]) -> bool:
+    if not drop:
+        return False
+    cleaned = NUMBER_SUFFIX_RE.sub(' ', text)
+    for tok in TOKEN_RE.findall(cleaned):
+        bare = APOSTROPHE_RE.split(tok, 1)[0]
+        if len(bare) >= 2 and bare.casefold() in drop:
+            return True
+    return False
+
+DROP_SET = load_drop_set(BASE)
+if DROP_SET:
+    print(f'Foreign-word filter active: {len(DROP_SET)} drop tokens loaded', flush=True)
+else:
+    print('Foreign-word filter inactive (no drop-token files found)', flush=True)
+
 print('Loading whisper-large-v3 on CUDA...', flush=True)
 model = WhisperModel('large-v3', device='cuda', compute_type='float16')
 
 entries = []
+total_dropped_foreign = 0
 for wav_path in sorted(RAW.glob('*.wav')):
     vid = wav_path.stem
     trans_json = TRANS / f'{vid}.json'
@@ -69,7 +115,7 @@ for wav_path in sorted(RAW.glob('*.wav')):
     print(f'[{vid}] resampling audio to {TARGET_SR} Hz...', flush=True)
     audio, _ = librosa.load(str(wav_path), sr=TARGET_SR, mono=True)
 
-    kept, dropped_dur, dropped_speech, dropped_text = 0, 0, 0, 0
+    kept, dropped_dur, dropped_speech, dropped_text, dropped_foreign = 0, 0, 0, 0, 0
     for i, seg in enumerate(data['segments']):
         dur = seg['end'] - seg['start']
         text = seg['text'].strip()
@@ -79,6 +125,8 @@ for wav_path in sorted(RAW.glob('*.wav')):
             dropped_speech += 1; continue
         if len(text) < MIN_TEXT_LEN:
             dropped_text += 1; continue
+        if has_foreign_token(text, DROP_SET):
+            dropped_foreign += 1; continue
         # Pad each chunk by up to SEGMENT_PADDING_S on each side.
         #
         # IMPORTANT: clamp the padding to the midpoint of the gap to the
@@ -104,12 +152,14 @@ for wav_path in sorted(RAW.glob('*.wav')):
         sf.write(WAVS / out_name, chunk, TARGET_SR, subtype='PCM_16')
         entries.append((out_name, text))
         kept += 1
-    print(f'  [{vid}] kept={kept} | dropped: dur={dropped_dur} speech={dropped_speech} text={dropped_text}', flush=True)
+    total_dropped_foreign += dropped_foreign
+    print(f'  [{vid}] kept={kept} | dropped: dur={dropped_dur} speech={dropped_speech} text={dropped_text} foreign={dropped_foreign}', flush=True)
 
 with METADATA.open('w', encoding='utf-8') as f:
     for name, text in entries:
         f.write(f'{name}|{text}\n')
 
 print(f'\n=== Total utterances: {len(entries)} ===', flush=True)
+print(f'Dropped by foreign-word filter: {total_dropped_foreign}', flush=True)
 print(f'metadata.csv: {METADATA}', flush=True)
 print(f'wavs/: {WAVS}', flush=True)
