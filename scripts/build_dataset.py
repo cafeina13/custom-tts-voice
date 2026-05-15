@@ -10,18 +10,28 @@ import librosa
 #   TTS_DATA_ROOT          -> root dir containing per-dataset subdirs   (default: ~/TTS/data)
 #   TTS_DATASET            -> dataset subdir to process                 (default: merve)
 #   TTS_LANGUAGE           -> Whisper language code                     (default: tr)
-#   TTS_SEGMENT_PADDING_S  -> seconds of audio kept BEFORE/AFTER each
-#                             Whisper-VAD segment when slicing chunks.
-#                             0.0 = original tight cut (Whisper's exact
-#                             timestamps); 0.2 = 200 ms padding each side
-#                             so the model learns proper attack/release.
-#                             Default: 0.2 (introduced in experiment 2
-#                             after experiment 1's tight cuts caused
-#                             swallowed word starts and boundary noise).
+#   TTS_SEGMENT_PADDING_S  -> default seconds of audio kept BEFORE and
+#                             AFTER each Whisper-VAD segment. Acts as a
+#                             fallback for both lead-in and tail when the
+#                             asymmetric vars below are unset. Default 0.2.
+#   TTS_SEGMENT_PAD_LEAD_S -> override lead-in padding only (before segment
+#                             start). Falls back to TTS_SEGMENT_PADDING_S.
+#                             Lower values (e.g. 0.05) reduce "mumble before
+#                             first word" inference artifact at the cost of
+#                             slightly tighter word-onset cuts.
+#   TTS_SEGMENT_PAD_TAIL_S -> override tail padding only (after segment end).
+#                             Falls back to TTS_SEGMENT_PADDING_S.
+#
+# Symmetric 0.2 padding was introduced in experiment 2 to fix experiment 1's
+# swallowed word starts. Experiment 3 splits it asymmetrically (typ.
+# lead=0.05, tail=0.2) to address the leading-frame mumble that symmetric
+# padding turned out to introduce.
 DATA_ROOT = Path(os.environ.get('TTS_DATA_ROOT', str(Path.home() / 'TTS' / 'data')))
 DATASET = os.environ.get('TTS_DATASET', 'merve')
 LANGUAGE = os.environ.get('TTS_LANGUAGE', 'tr')
 SEGMENT_PADDING_S = float(os.environ.get('TTS_SEGMENT_PADDING_S', '0.2'))
+SEGMENT_PAD_LEAD_S = float(os.environ.get('TTS_SEGMENT_PAD_LEAD_S', str(SEGMENT_PADDING_S)))
+SEGMENT_PAD_TAIL_S = float(os.environ.get('TTS_SEGMENT_PAD_TAIL_S', str(SEGMENT_PADDING_S)))
 
 BASE = DATA_ROOT / DATASET
 RAW = BASE / 'raw'
@@ -143,8 +153,8 @@ for wav_path in sorted(RAW.glob('*.wav')):
             if i + 1 < len(data['segments'])
             else float('inf')
         )
-        pad_before = max(0.0, min(SEGMENT_PADDING_S, (seg['start'] - prev_end) / 2))
-        pad_after = max(0.0, min(SEGMENT_PADDING_S, (next_start - seg['end']) / 2))
+        pad_before = max(0.0, min(SEGMENT_PAD_LEAD_S, (seg['start'] - prev_end) / 2))
+        pad_after = max(0.0, min(SEGMENT_PAD_TAIL_S, (next_start - seg['end']) / 2))
         s_idx = max(0, int((seg['start'] - pad_before) * TARGET_SR))
         e_idx = min(len(audio), int((seg['end'] + pad_after) * TARGET_SR))
         chunk = audio[s_idx:e_idx]

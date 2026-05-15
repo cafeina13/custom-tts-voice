@@ -114,7 +114,9 @@ Scripts are parameterized via environment variables — defaults match the layou
 | `TTS_CKPT_EVERY_N_STEPS`  | `1000`                               | Snapshot interval — feeds the A/B ladder      |
 | `TTS_CKPT_KEEP_ALL`       | `1`                                  | Keep every snapshot, not just the best        |
 | `TTS_CKPT_PATH`           | `$TTS_CHECKPOINT_DIR/base.ckpt`      | Override to resume from a saved Lightning ckpt|
-| `TTS_SEGMENT_PADDING_S`   | `0.2`                                | Padding around Whisper VAD segments (seconds) |
+| `TTS_SEGMENT_PADDING_S`   | `0.2`                                | Default padding around Whisper VAD segments — used as fallback for both lead-in and tail (seconds) |
+| `TTS_SEGMENT_PAD_LEAD_S`  | `$TTS_SEGMENT_PADDING_S`             | Override lead-in padding only. Lower (e.g. `0.05`) reduces "mumble before first word" inference artifact |
+| `TTS_SEGMENT_PAD_TAIL_S`  | `$TTS_SEGMENT_PADDING_S`             | Override tail padding only. Keep around `0.2` to avoid clipping word ends |
 
 ## Setup (one-time, inside WSL2 Ubuntu or plain Linux)
 
@@ -249,7 +251,9 @@ Things that bit and how they were fixed — collected so the next person doesn't
 - **Audiobook narrators sound too oratorical for notification reading.** Documentary/essay-style narrators with conversational prosody work better.
 - **Background music in the source survives training.** Vocal separation (Demucs/UVR) helps as a last resort, but a clean source produces strictly better results — the model otherwise picks up subtle separation artifacts and reproduces them in the trained voice.
 - **Single-speaker discipline matters.** Any contamination (movie clips, guest interviews, ads) gets averaged in as inconsistency. Aggressively curate.
-- **Whisper's VAD cuts segments too tightly by default.** Without padding, the first phoneme of each segment is partly clipped and the model never learns proper word onsets → trained voice "swallows" the start of words. Add ~200 ms padding on both sides of each Whisper segment (`TTS_SEGMENT_PADDING_S`).
+- **Whisper's VAD cuts segments too tightly by default.** Without padding, the first phoneme of each segment is partly clipped and the model never learns proper word onsets → trained voice "swallows" the start of words. Add tail padding for natural release (`TTS_SEGMENT_PAD_TAIL_S=0.2`).
+- **Symmetric padding helps the start problem but creates a new one.** A leading 200 ms slice usually contains breath / lip-noise / non-silence wind-up. The model learns "before phonemes start, generate some non-silent audio" → occasional mumble or "chewing" before the first word at inference. Fix: asymmetric padding (small lead-in like `TTS_SEGMENT_PAD_LEAD_S=0.05`, full tail like `TTS_SEGMENT_PAD_TAIL_S=0.2`).
+- **VITS hallucinates a noisy tail past the last word unless given a stop signal.** Always end text input with terminal punctuation (`.` / `!` / `?`) — espeak inserts an end-of-sentence phoneme and the trailing garbage goes away. With no punctuation, the duration predictor over-extends and the decoder fills the slot with whatever the prior generates.
 - **Foreign words wreck phoneme/audio alignment.** A Turkish-language espeak phonemizer reads "Frankenstein" with Turkish letter-to-sound rules, but the speaker actually said it English-style. That phoneme-vs-audio mismatch injects noise into training and contributes to mumbling on otherwise-clean native words. `scan_foreign_words.py` flags non-native tokens via hunspell + Unicode category checks; review the produced `review_tokens.txt` to keep legit native words that were false-flagged.
 - **Save every-1k checkpoints, not just the best.** Lightning's default `ModelCheckpoint` keeps one. You want the whole ladder so you can listen-test and find the perceptual sweet spot — which often disagrees with the lowest val_loss point.
 - **`.onnx` is just a container.** Two `.onnx` TTS models from different architectures (Piper VITS, Supertonic, etc.) are not interchangeable — the consuming app has to expect specific input/output tensor shapes.
