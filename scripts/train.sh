@@ -119,5 +119,5 @@ python3 -u "$SCRIPT_DIR/train_runner.py" fit \
   --trainer.precision "$TTS_PRECISION" \
   --trainer.max_steps "$TTS_MAX_STEPS" \
   --trainer.default_root_dir "$TTS_OUTPUT_DIR" \
-  --ckpt_path "$TTS_CHECKPOINT_DIR/base.ckpt" \
+  --ckpt_path "$CKPT_PATH" \
   2>&1 | tee -a "$LOG"
